@@ -50,6 +50,40 @@ class BuildPyTests(unittest.TestCase):
 		self.assertIn("--features", cmd)
 		self.assertIn("-j", cmd)
 
+	def test_windows_msvc_auto_backend_uses_xwin(self):
+		target = "aarch64-pc-windows-msvc"
+		self.assertEqual(rbe_build.resolve_build_tool(target, "auto", host_os="linux"), ["cargo", "xwin"])
+		self.assertEqual(rbe_build.resolve_build_tool(target, "auto", host_os="windows"), ["cargo", "xwin"])
+		self.assertEqual(rbe_build.resolve_build_tool(target, "cargo", host_os="linux"), ["cargo"])
+		self.assertEqual(rbe_build.resolve_build_tool(target, "cross", host_os="linux"), ["cross"])
+
+		cfg, _ = rbe_build.parse_args(["--only-backend", "--build-windows", "--arch-arm64", "--dry-run"])
+		_, command = rbe_build.build_cargo_command("backend", target, cfg, host_os="linux")
+		self.assertEqual(command[:3], ["cargo", "xwin", "build"])
+		self.assertIn("--target", command)
+		self.assertIn(target, command)
+
+	def test_windows_msvc_xwin_supports_check_and_test(self):
+		target = "aarch64-pc-windows-msvc"
+		for mode in ("check", "test"):
+			cfg = rbe_build.BuildConfig(mode=mode, components=["backend"])
+			_, command = rbe_build.build_cargo_command("backend", target, cfg, host_os="linux")
+			self.assertEqual(command[:3], ["cargo", "xwin", mode])
+
+	def test_msvc_llvm_tool_defaults_preserve_user_overrides(self):
+		target = "aarch64-pc-windows-msvc"
+		env = {}
+		rbe_build.configure_msvc_llvm_env(target, env)
+		self.assertEqual(env["AR_aarch64_pc_windows_msvc"], "llvm-lib")
+		self.assertEqual(env["CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER"], "lld-link")
+
+		overrides = {
+			"AR_aarch64_pc_windows_msvc": "custom-lib",
+			"CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER": "custom-link",
+		}
+		rbe_build.configure_msvc_llvm_env(target, overrides)
+		self.assertEqual(overrides["AR_aarch64_pc_windows_msvc"], "custom-lib")
+		self.assertEqual(overrides["CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER"], "custom-link")
 	def test_tui_wasd_arrows_e_interact_and_q_subinteract(self):
 		state = rbe_build.TuiState(rbe_build.BuildConfig(), host_os="windows", host_arch="x64")
 		# Initial cursor is on Build Mode; E cycles selective -> sdk
@@ -78,6 +112,7 @@ class BuildPyTests(unittest.TestCase):
 		self.assertEqual(state.handle_key("SUB"), "prompt")
 		self.assertEqual(state.pending_prompt, "custom_target")
 
+	@unittest.skipUnless(importlib.util.find_spec("rich"), "Rich is optional for non-interactive build.py use")
 	def test_rich_dashboard_renders_cleanly(self):
 		from rich.console import Console
 
