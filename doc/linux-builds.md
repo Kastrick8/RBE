@@ -155,6 +155,48 @@ The same preflight runs automatically for normal Linux builds, so a separate `--
 
 `--check-tools` is primarily useful for CI, deployment hosts, and troubleshooting because it validates the host without spending time compiling RBE.
 
+## Windows MSVC cross-builds
+
+For every Windows MSVC target triple, python3 build.py uses the cargo xwin
+backend automatically when --cross-backend auto is selected (the default).
+This applies to selective builds, SDK builds, full releases, --check, and
+--test runs. The first build bootstraps the Cargo subcommand when needed:
+
+```bash
+cargo install --locked cargo-xwin
+```
+
+The build script performs that installation automatically and adds
+CARGO_HOME/bin to the child-process PATH. cargo-xwin then downloads and
+caches the Microsoft C Runtime and Windows SDK sysroot, and configures its
+LLVM-based clang-cl / lld-link toolchain. You do not need the matching
+Visual Studio ARM64 C++ workload just to obtain the ARM64 import libraries.
+
+RBE also supplies target-specific defaults for the C archiver and Rust linker:
+
+```text
+AR_aarch64_pc_windows_msvc=llvm-lib
+CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=lld-link
+```
+
+The same naming is applied to x64 and x86 targets. Existing environment values
+are preserved, so a developer can deliberately select another archiver or
+linker. Keep LLVM/Clang installed and available to cargo-xwin; its upstream
+prerequisites include Clang, and LLVM tools are required for some assembly and
+native dependency builds.
+
+To install the tool manually or pre-cache the SDK before an offline build:
+
+```bash
+cargo install --locked cargo-xwin
+cargo xwin cache xwin
+```
+
+Use --cross-backend cargo to opt out and use the machine's own Visual Studio
+and Windows SDK installation. Explicit cross, zigbuild, and xwin backend
+selections remain available. The xwin backend is restricted to Windows MSVC
+triples; it is not a Windows GNU or Linux/macOS cross compiler.
+
 ## Deployment-host guidance
 
 For build-on-deploy platforms, do not rely on a restored Rust cache merely because `rustup toolchain list` names the expected channel. Run the RBE preflight before compiling, or invoke the normal `build.sh` entry point so the preflight runs automatically.

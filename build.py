@@ -8,7 +8,7 @@ Supports:
 	- Multi-OS (`windows`, `linux`, `macos`, `freebsd`, `android`) and multi-architecture
 	  (`x64`, `arm64`, `x86`, `armv7`, `riscv64`, `loongarch64`, `ppc64le`, `s390x`, `wasm32`)
 	  plus arbitrary custom Rust target triples
-	- Cross-compilation backends (`auto`, `cargo`, `cross`, `zigbuild`)
+	- Cross-compilation backends (auto, cargo, cross, zigbuild, xwin); automatic Windows/MSVC builds bootstrap cargo-xwin
 	- `check` and `test` modes, custom Cargo features, parallel job limits, and dry-run previews
 """
 
@@ -71,7 +71,7 @@ SUPPORTED_ARCHES = (
 	"s390x",
 	"wasm32",
 )
-CROSS_BACKENDS = ("auto", "cargo", "cross", "zigbuild")
+CROSS_BACKENDS = ("auto", "cargo", "cross", "zigbuild", "xwin")
 JOB_PRESETS = (None, 2, 4, 8, 16)
 
 ALL_RELEASE_TARGETS = (
@@ -276,6 +276,12 @@ def normalize_component(raw: str) -> str:
 	return val
 
 
+def is_windows_msvc_target(target: str) -> bool:
+	"""Returns whether the target triple is a Windows MSVC target."""
+	lower = target.lower()
+	return "windows" in lower and "msvc" in lower
+
+
 def resolve_build_tool(
 	target: str,
 	backend: str,
@@ -283,10 +289,14 @@ def resolve_build_tool(
 	has_cross: Optional[bool] = None,
 	has_zigbuild: Optional[bool] = None,
 ) -> List[str]:
-	"""Chooses the Cargo driver command (`cargo`, `cross`, or `cargo zigbuild`) for `target`."""
+	"""Chooses the Cargo driver; auto uses cargo-xwin for every Windows/MSVC target."""
 	h_os = host_os or detect_host_os()
 	is_cross = target_os_from_triple(target) != h_os
 
+	if backend == "xwin":
+		if not is_windows_msvc_target(target):
+			raise ValueError("The xwin backend only supports Windows MSVC target triples.")
+		return ["cargo", "xwin"]
 	if backend == "cross":
 		return ["cross"]
 	if backend == "zigbuild":
@@ -294,7 +304,11 @@ def resolve_build_tool(
 	if backend == "cargo":
 		return ["cargo"]
 
-	# Auto mode prefers `cross` or `cargo-zigbuild` when cross-compiling across OSes.
+	# xwin provides the MSVC CRT/Windows SDK plus clang-cl/lld-link integration.
+	if backend == "auto" and is_windows_msvc_target(target):
+		return ["cargo", "xwin"]
+
+	# Auto mode prefers cross or cargo-zigbuild for other cross-OS targets.
 	if is_cross:
 		if (has_cross if has_cross is not None else bool(shutil.which("cross"))):
 			return ["cross"]
@@ -314,10 +328,21 @@ def build_cargo_command(
 	"""Constructs `(cwd, argv)` for building, checking, or testing `component`."""
 	cwd, manifest_rel, pkg, bin_name, _ = COMPONENTS[component]
 
-	if cfg.mode == "check":
-		cmd = ["cargo", "check"]
-	elif cfg.mode == "test":
-		cmd = ["cargo", "test"]
+	use_xwin = cfg.cross_backend == "xwin" or (
+		cfg.cross_backend == "auto" and is_windows_msvc_target(target)
+	)
+	if cfg.mode in ("check", "test"):
+		if use_xwin:
+			driver = resolve_build_tool(
+				target,
+				cfg.cross_backend,
+				host_os=host_os,
+				has_cross=has_cross,
+				has_zigbuild=has_zigbuild,
+			)
+			cmd = [*driver, cfg.mode]
+		else:
+			cmd = ["cargo", cfg.mode]
 	else:
 		driver = resolve_build_tool(
 			target,
@@ -356,6 +381,11 @@ def run_check_tools() -> int:
 		("rustup", ["rustup", "--version"]),
 		("cross", ["cross", "--version"]),
 		("zigbuild", ["cargo-zigbuild", "--version"]),
+		("cargo-xwin", ["cargo-xwin", "--version"]),
+		("clang", ["clang", "--version"]),
+		("clang-cl", ["clang-cl", "--version"]),
+		("llvm-lib", ["llvm-lib", "--version"]),
+		("lld-link", ["lld-link", "--version"]),
 		("git", ["git", "--version"]),
 		("cc", ["cc", "--version"]),
 	]
@@ -364,7 +394,7 @@ def run_check_tools() -> int:
 	ok = True
 	for name, cmd in checks:
 		if not shutil.which(cmd[0]):
-			optional = name in ("cross", "zigbuild") or (name == "cc" and detect_host_os() == "windows")
+			optional = name in ("cross", "zigbuild", "cargo-xwin", "clang", "clang-cl", "llvm-lib", "lld-link") or (name == "cc" and detect_host_os() == "windows")
 			tag = "[optional]" if optional else "MISSING"
 			print(f"  {name:<10} {tag}")
 			if name in ("rustc", "cargo"):
@@ -395,6 +425,43 @@ def ensure_rustup_target(target: str, dry_run: bool) -> None:
 	if target not in installed:
 		print(f"  + rustup target add {target}")
 		subprocess.run(["rustup", "target", "add", target], check=True)
+
+
+def configure_msvc_llvm_env(target: str, env: Dict[str, str]) -> None:
+	"""Defaults MSVC C archiving and final linking to LLVM-compatible tools."""
+	if not is_windows_msvc_target(target):
+		return
+	env_target = target.lower().replace("-", "_")
+	# Preserve explicit caller settings; cc-rs reads the target-qualified AR first.
+	env.setdefault(f"AR_{env_target}", "llvm-lib")
+	env.setdefault(f"CARGO_TARGET_{env_target.upper()}_LINKER", "lld-link")
+
+
+def ensure_cargo_xwin(env: Dict[str, str], dry_run: bool = False) -> None:
+	"""Installs cargo-xwin once and makes CARGO_HOME/bin visible to Cargo subprocesses."""
+	cargo_home = Path(env.get("CARGO_HOME") or (Path.home() / ".cargo"))
+	cargo_bin = cargo_home / "bin"
+	path_entries = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+	cargo_bin_text = str(cargo_bin)
+	if cargo_bin_text not in path_entries:
+		path_entries.insert(0, cargo_bin_text)
+		env["PATH"] = os.pathsep.join(path_entries)
+
+	if shutil.which("cargo-xwin", path=env.get("PATH")):
+		return
+
+	install_cmd = ["cargo", "install", "--locked", "cargo-xwin"]
+	print(f"  + {' '.join(install_cmd)}")
+	if dry_run:
+		return
+	if not shutil.which("cargo", path=env.get("PATH")):
+		raise FileNotFoundError("Cargo is required to bootstrap cargo-xwin; install Rust/Cargo and retry.")
+	subprocess.run(install_cmd, env=env, check=True)
+	if not shutil.which("cargo-xwin", path=env.get("PATH")):
+		raise FileNotFoundError(
+			f"cargo install completed but cargo-xwin was not found in {cargo_bin}. "
+			"Check CARGO_HOME and ensure its bin directory is on PATH."
+		)
 
 
 def copy_clean_tree(source: Path, dest: Path) -> None:
@@ -598,6 +665,18 @@ def execute_build(cfg: BuildConfig) -> int:
 	cargo_target_dir = resolve_shared_cargo_target()
 	env = os.environ.copy()
 	env["CARGO_TARGET_DIR"] = cargo_target_dir
+	if cfg.cross_backend == "xwin":
+		unsupported = [target for target in targets if not is_windows_msvc_target(target)]
+		if unsupported:
+			detail = ", ".join(unsupported)
+			raise ValueError(f"The xwin backend only supports Windows MSVC targets (got: {detail}).")
+	if cfg.cross_backend in ("auto", "cargo", "xwin"):
+		for target in targets:
+			configure_msvc_llvm_env(target, env)
+	if cfg.cross_backend == "xwin" or (
+		cfg.cross_backend == "auto" and any(is_windows_msvc_target(target) for target in targets)
+	):
+		ensure_cargo_xwin(env, dry_run=cfg.dry_run)
 	if cfg.deny_admin_setup:
 		env["RBE_DENY_ADMIN_SETUP"] = "1"
 		for key in (
@@ -640,7 +719,7 @@ def execute_build(cfg: BuildConfig) -> int:
 				if cfg.mode not in ("check", "test"):
 					print(f"    -> would stage {dest_path}")
 				continue
-			if cfg.mode not in ("check", "test") and target_os_from_triple(target) != detect_host_os() and cmd[0] == "cargo" and "zigbuild" not in cmd:
+			if cfg.mode not in ("check", "test") and target_os_from_triple(target) != detect_host_os() and cmd[0] == "cargo" and "zigbuild" not in cmd and "xwin" not in cmd:
 				print(f"  WARNING: cross-OS target {target} without `cross` or `cargo-zigbuild`; linker may fail", file=sys.stderr)
 			subprocess.run(cmd, cwd=str(cwd), env=env, check=True)
 			if cfg.mode not in ("check", "test"):
@@ -807,7 +886,7 @@ class TuiState:
 		# Probe cache path and installed tools ONCE at startup so 30 FPS rendering never spawns subprocesses.
 		self.cargo_target_dir = resolve_shared_cargo_target()
 		self.detected_tools = [
-			name for name in ("rustc", "cargo", "rustup", "cross", "cargo-zigbuild") if shutil.which(name)
+			name for name in ("rustc", "cargo", "rustup", "cross", "cargo-zigbuild", "cargo-xwin", "clang", "clang-cl", "llvm-lib", "lld-link") if shutil.which(name)
 		]
 		self.has_cross = "cross" in self.detected_tools
 		self.has_zigbuild = "cargo-zigbuild" in self.detected_tools
@@ -828,7 +907,7 @@ class TuiState:
 		items.extend([
 			MenuRow("opt", "profile", "Profile (release / debug)", "Q: toggle musl"),
 			MenuRow("opt", "musl", "Linux Static musl / Bare WASM", "Q: toggle profile"),
-			MenuRow("opt", "cross_backend", "Cross Backend (auto/cargo/cross/zigbuild)", "Q: cycle backwards"),
+			MenuRow("opt", "cross_backend", "Cross Backend (auto/cargo/cross/zigbuild/xwin)", "Q: cycle backwards"),
 			MenuRow("opt", "build_all", "Full Release Matrix (--build-all)", "Q: toggle dry-run"),
 			MenuRow("opt", "features", "Cargo Features (--features)", "E/Q: edit or clear"),
 			MenuRow("opt", "jobs", "Parallel Jobs (-j)", "Q: reset to auto"),
@@ -837,7 +916,7 @@ class TuiState:
 			MenuRow("opt", "dev_content", "--dev-content (full release)", "Q: toggle dry-run"),
 			MenuRow("opt", "dry_run", "Dry-Run Preview (--dry-run)", "Q: run build now"),
 			MenuRow("action", "build", "Start Build", "E: execute build plan"),
-			MenuRow("action", "tools", "Check Toolchain & Targets", "E: inspect rustc/cross/zigbuild"),
+			MenuRow("action", "tools", "Check Toolchain & Targets", "E: inspect Rust, xwin, and LLVM tools"),
 			MenuRow("action", "quit", "Quit", "Esc: exit immediately"),
 		])
 		return items
@@ -1321,7 +1400,7 @@ def parse_args(argv: Sequence[str]) -> Tuple[BuildConfig, bool]:
 	parser.add_argument("--arch-riscv64", action="store_true", help="Target riscv64.")
 	parser.add_argument("--arch-wasm32", action="store_true", help="Target wasm32.")
 	parser.add_argument("--target", action="append", default=[], metavar="TRIPLE", help="Explicit Rust target triple (repeatable).")
-	parser.add_argument("--cross-backend", choices=CROSS_BACKENDS, default="auto", help="Cross-compilation driver (auto/cargo/cross/zigbuild).")
+	parser.add_argument("--cross-backend", choices=CROSS_BACKENDS, default="auto", help="Cross-compilation driver (auto/cargo/cross/zigbuild/xwin).")
 	parser.add_argument("--features", default="", help="Comma-separated Cargo features.")
 	parser.add_argument("-j", "--jobs", type=int, default=None, help="Parallel Cargo build jobs.")
 	parser.add_argument("--musl", action="store_true", help="Use Linux musl targets (or bare wasm32-unknown-unknown).")
@@ -1329,7 +1408,7 @@ def parse_args(argv: Sequence[str]) -> Tuple[BuildConfig, bool]:
 	parser.add_argument("--deny-admin-setup", action="store_true", help="Skip compile-time admin password prompt.")
 	parser.add_argument("--no-embed", action="store_true", help="Full release: do not embed container-bin.")
 	parser.add_argument("--dev-content", action="store_true", help="Full release: bundle dev api/module files.")
-	parser.add_argument("--check-tools", action="store_true", help="Verify Rust/cross/C prerequisites and exit.")
+	parser.add_argument("--check-tools", action="store_true", help="Verify Rust, xwin, LLVM, and C prerequisites and exit.")
 	parser.add_argument("--dry-run", action="store_true", help="Print resolved build commands without executing Cargo.")
 
 	ns = parser.parse_args(expanded)

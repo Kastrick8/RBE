@@ -11,7 +11,10 @@ on:
       - 'build*.ps1'
       - 'build-select.sh'
       - 'build-release.sh'
+      - 'build.py'
+      - 'test-build-py.py'
       - 'build-core.sh'
+      - 'doc/README.md'
       - 'build-help.txt'
       - 'doc/linux-builds.md'
       - '.github/workflows/build-tools-ci.yml'
@@ -25,7 +28,10 @@ on:
       - 'build*.ps1'
       - 'build-select.sh'
       - 'build-release.sh'
+      - 'build.py'
+      - 'test-build-py.py'
       - 'build-core.sh'
+      - 'doc/README.md'
       - 'build-help.txt'
       - 'doc/linux-builds.md'
       - '.github/workflows/build-tools-ci.yml'
@@ -83,6 +89,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Validate shell builder syntax
         run: python3 test-build-shell.py
+      - name: Verify Python build driver and Windows/MSVC command routing
+        run: |
+          python3 -m py_compile build.py test-build-py.py
+          python3 test-build-py.py
+          python3 build.py --build-windows --arch-arm64 --dry-run
       - name: Verify Linux build prerequisites
         run: ./build.sh --check-tools --build-linux --arch-x64
       - name: Verify cache discovery and real per-crate Cargo reuse
