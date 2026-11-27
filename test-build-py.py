@@ -84,6 +84,7 @@ class BuildPyTests(unittest.TestCase):
 		rbe_build.configure_msvc_llvm_env(target, overrides)
 		self.assertEqual(overrides["AR_aarch64_pc_windows_msvc"], "custom-lib")
 		self.assertEqual(overrides["CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER"], "custom-link")
+
 	def test_tui_wasd_arrows_e_interact_and_q_subinteract(self):
 		state = rbe_build.TuiState(rbe_build.BuildConfig(), host_os="windows", host_arch="x64")
 		# Initial cursor is on Build Mode; E cycles selective -> sdk
