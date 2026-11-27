@@ -665,6 +665,11 @@ def execute_build(cfg: BuildConfig) -> int:
 	cargo_target_dir = resolve_shared_cargo_target()
 	env = os.environ.copy()
 	env["CARGO_TARGET_DIR"] = cargo_target_dir
+	if cfg.cross_backend == "xwin":
+		unsupported = [target for target in targets if not is_windows_msvc_target(target)]
+		if unsupported:
+			detail = ", ".join(unsupported)
+			raise ValueError(f"The xwin backend only supports Windows MSVC targets (got: {detail}).")
 	if cfg.cross_backend in ("auto", "cargo", "xwin"):
 		for target in targets:
 			configure_msvc_llvm_env(target, env)
@@ -714,7 +719,7 @@ def execute_build(cfg: BuildConfig) -> int:
 				if cfg.mode not in ("check", "test"):
 					print(f"    -> would stage {dest_path}")
 				continue
-			if cfg.mode not in ("check", "test") and target_os_from_triple(target) != detect_host_os() and cmd[0] == "cargo" and "zigbuild" not in cmd:
+			if cfg.mode not in ("check", "test") and target_os_from_triple(target) != detect_host_os() and cmd[0] == "cargo" and "zigbuild" not in cmd and "xwin" not in cmd:
 				print(f"  WARNING: cross-OS target {target} without `cross` or `cargo-zigbuild`; linker may fail", file=sys.stderr)
 			subprocess.run(cmd, cwd=str(cwd), env=env, check=True)
 			if cfg.mode not in ("check", "test"):
