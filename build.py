@@ -15,12 +15,17 @@ Supports:
 from __future__ import annotations
 
 import argparse
+import getpass
+import hashlib
 import json
 import os
+import re
+import secrets
 import platform
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -271,7 +276,13 @@ def normalize_component(raw: str) -> str:
 	return val
 
 
-def resolve_build_tool(target: str, backend: str, host_os: Optional[str] = None) -> List[str]:
+def resolve_build_tool(
+	target: str,
+	backend: str,
+	host_os: Optional[str] = None,
+	has_cross: Optional[bool] = None,
+	has_zigbuild: Optional[bool] = None,
+) -> List[str]:
 	"""Chooses the Cargo driver command (`cargo`, `cross`, or `cargo zigbuild`) for `target`."""
 	h_os = host_os or detect_host_os()
 	is_cross = target_os_from_triple(target) != h_os
@@ -285,9 +296,9 @@ def resolve_build_tool(target: str, backend: str, host_os: Optional[str] = None)
 
 	# Auto mode prefers `cross` or `cargo-zigbuild` when cross-compiling across OSes.
 	if is_cross:
-		if shutil.which("cross"):
+		if (has_cross if has_cross is not None else bool(shutil.which("cross"))):
 			return ["cross"]
-		if shutil.which("cargo-zigbuild"):
+		if (has_zigbuild if has_zigbuild is not None else bool(shutil.which("cargo-zigbuild"))):
 			return ["cargo", "zigbuild"]
 	return ["cargo"]
 
@@ -297,6 +308,8 @@ def build_cargo_command(
 	target: str,
 	cfg: BuildConfig,
 	host_os: Optional[str] = None,
+	has_cross: Optional[bool] = None,
+	has_zigbuild: Optional[bool] = None,
 ) -> Tuple[Path, List[str]]:
 	"""Constructs `(cwd, argv)` for building, checking, or testing `component`."""
 	cwd, manifest_rel, pkg, bin_name, _ = COMPONENTS[component]
@@ -306,7 +319,13 @@ def build_cargo_command(
 	elif cfg.mode == "test":
 		cmd = ["cargo", "test"]
 	else:
-		driver = resolve_build_tool(target, cfg.cross_backend, host_os=host_os)
+		driver = resolve_build_tool(
+			target,
+			cfg.cross_backend,
+			host_os=host_os,
+			has_cross=has_cross,
+			has_zigbuild=has_zigbuild,
+		)
 		cmd = driver if driver[-1] == "zigbuild" else [*driver, "build"]
 
 	if manifest_rel:
@@ -401,6 +420,172 @@ def copy_sdk_bindings(out_dir: Path) -> None:
 	copy_clean_tree(SDK_SOURCE_DIR / "python", bindings / "python")
 
 
+def _is_hex(value: str, length: int) -> bool:
+	return bool(re.fullmatch(rf"[0-9a-fA-F]{{{length}}}", value))
+
+
+def derive_admin_verifier(password: str, salt_hex: Optional[str] = None, rounds: int = 120_000) -> Tuple[int, str, str]:
+	"""Derives RBE's PBKDF2-HMAC-SHA256 Control Room verifier in pure Python (no OpenSSL required)."""
+	if len(password) < 12:
+		raise ValueError("Admin password must contain at least 12 characters.")
+	if len(password) > 1024:
+		raise ValueError("Admin password is unreasonably large.")
+	salt = (salt_hex or secrets.token_hex(8)).lower()
+	if not _is_hex(salt, 16):
+		raise ValueError("RBE_ADMIN_AUTH_SALT_HEX must contain exactly 16 hexadecimal characters.")
+	verifier = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), rounds, dklen=32).hex()
+	return rounds, salt, verifier
+
+
+def ensure_admin_verifier_env(env: Dict[str, str], deny_admin_setup: bool, dry_run: bool = False) -> None:
+	"""Populates either `RBE_DENY_ADMIN_SETUP=1` or validated `RBE_ADMIN_AUTH_*` env vars."""
+	if deny_admin_setup:
+		env["RBE_DENY_ADMIN_SETUP"] = "1"
+		for key in (
+			"RBE_ADMIN_PASSWORD",
+			"RBE_ADMIN_AUTH_ROUNDS",
+			"RBE_ADMIN_AUTH_SALT_HEX",
+			"RBE_ADMIN_AUTH_VERIFIER_HEX",
+		):
+			env.pop(key, None)
+		return
+
+	env.pop("RBE_DENY_ADMIN_SETUP", None)
+	salt = env.get("RBE_ADMIN_AUTH_SALT_HEX", "")
+	verifier = env.get("RBE_ADMIN_AUTH_VERIFIER_HEX", "")
+	rounds_raw = env.get("RBE_ADMIN_AUTH_ROUNDS", "")
+
+	if salt or verifier or rounds_raw:
+		if not (salt and verifier and rounds_raw):
+			raise ValueError("RBE_ADMIN_AUTH_SALT_HEX, RBE_ADMIN_AUTH_VERIFIER_HEX, and RBE_ADMIN_AUTH_ROUNDS must be supplied together.")
+		if not _is_hex(salt, 16) or not _is_hex(verifier, 64) or not rounds_raw.isdigit() or int(rounds_raw) < 10_000:
+			raise ValueError("Invalid RBE_ADMIN_AUTH_* verifier parameters.")
+		return
+
+	if dry_run:
+		return
+
+	password = env.pop("RBE_ADMIN_PASSWORD", "")
+	if not password:
+		if not sys.stdin.isatty():
+			raise ValueError("Set RBE_ADMIN_PASSWORD, pass --deny-admin-setup, or run interactively to set the Control Room password.")
+		print("\nRBE Control Room authentication (or pass --deny-admin-setup for first-run setup)")
+		first = getpass.getpass("Admin password (12+ characters): ")
+		second = getpass.getpass("Confirm admin password: ")
+		if first != second:
+			raise ValueError("Admin passwords did not match.")
+		password = first
+
+	rounds, salt_hex, verifier_hex = derive_admin_verifier(password)
+	env["RBE_ADMIN_AUTH_ROUNDS"] = str(rounds)
+	env["RBE_ADMIN_AUTH_SALT_HEX"] = salt_hex
+	env["RBE_ADMIN_AUTH_VERIFIER_HEX"] = verifier_hex
+
+
+def ensure_container_signing_key_env(env: Dict[str, str], dry_run: bool = False) -> None:
+	"""Ensures a 32-byte (64-hex) ephemeral or externally supplied container signing key in `env`."""
+	existing = env.get("RBE_CONTAINER_SIGNING_PRIVATE_KEY", "")
+	if existing:
+		if not _is_hex(existing, 64):
+			raise ValueError("RBE_CONTAINER_SIGNING_PRIVATE_KEY must contain exactly 64 hexadecimal characters.")
+		return
+	if dry_run:
+		return
+	key_dir = Path(env.get("RBE_CONFIG_HOME") or (Path.home() / ".rbe"))
+	legacy_key = key_dir / "container-signing.key"
+	if legacy_key.exists():
+		legacy_key.unlink()
+	env["RBE_CONTAINER_SIGNING_PRIVATE_KEY"] = secrets.token_hex(32)
+
+
+def resolve_git_build_id() -> str:
+	"""Returns the current Git commit SHA for `RBE_BUILD_ID`, or `unknown-build`."""
+	try:
+		return subprocess.check_output(
+			["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+			text=True,
+			stderr=subprocess.DEVNULL,
+		).strip() or "unknown-build"
+	except Exception:
+		return "unknown-build"
+
+
+def run_full_release(cfg: BuildConfig, targets: List[str], cargo_target_dir: str, env: Dict[str, str]) -> int:
+	"""Executes the full RBE release pipeline natively in Python without external shell scripts."""
+	ensure_admin_verifier_env(env, deny_admin_setup=cfg.deny_admin_setup, dry_run=cfg.dry_run)
+	ensure_container_signing_key_env(env, dry_run=cfg.dry_run)
+	env.setdefault("RBE_BUILD_ID", resolve_git_build_id())
+
+	print(f"RBE Full Release Plan | profile={cfg.profile} | cross={cfg.cross_backend} | cache={cargo_target_dir}")
+	print(f"  Targets: {', '.join(targets)}")
+
+	for target in targets:
+		is_win = target_os_from_triple(target) == "windows"
+		ext = ".exe" if is_win else ""
+		out_dir = DIST_ROOT / target
+		dep_dir = out_dir / "dep"
+		print(f"\n=== Full Release: {target} ({cfg.profile}) ===")
+		ensure_rustup_target(target, dry_run=cfg.dry_run)
+
+		# 1. Build container-bin -> dist/<target>/dep/container(.exe)
+		c_cwd, c_cmd = build_cargo_command("container", target, cfg)
+		container_built = Path(cargo_target_dir) / target / cfg.profile / f"container-bin{ext}"
+		print(f"  [1/4 container] {' '.join(c_cmd)}")
+		if not cfg.dry_run:
+			if out_dir.exists():
+				shutil.rmtree(out_dir)
+			dep_dir.mkdir(parents=True, exist_ok=True)
+			subprocess.run(c_cmd, cwd=str(c_cwd), env=env, check=True)
+			shutil.copy2(container_built, dep_dir / f"container{ext}")
+
+		# 2. Build service (without embedded path vars)
+		s_cwd, s_cmd = build_cargo_command("service", target, cfg)
+		service_built = Path(cargo_target_dir) / target / cfg.profile / f"service{ext}"
+		print(f"  [2/4 service]   {' '.join(s_cmd)}")
+		if not cfg.dry_run:
+			s_env = env.copy()
+			s_env.pop("RBE_CONTAINER_BIN_PATH", None)
+			s_env.pop("RBE_SERVICE_BIN_PATH", None)
+			subprocess.run(s_cmd, cwd=str(s_cwd), env=s_env, check=True)
+			shutil.copy2(service_built, dep_dir / f"service{ext}")
+
+		# 3. Build cloud_node
+		n_cwd, n_cmd = build_cargo_command("cloud-node", target, cfg)
+		cloud_built = Path(cargo_target_dir) / target / cfg.profile / f"cloud_node{ext}"
+		print(f"  [3/4 cloud]     {' '.join(n_cmd)}")
+		if not cfg.dry_run:
+			subprocess.run(n_cmd, cwd=str(n_cwd), env=env, check=True)
+			shutil.copy2(cloud_built, out_dir / f"cloud_node{ext}")
+
+		# 4. Build backend bound to container & service integrity hashes
+		b_cwd, b_cmd = build_cargo_command("backend", target, cfg)
+		backend_built = Path(cargo_target_dir) / target / cfg.profile / f"backend{ext}"
+		print(f"  [4/4 backend]   {' '.join(b_cmd)}")
+		if not cfg.dry_run:
+			b_env = env.copy()
+			if not cfg.no_embed:
+				b_env["RBE_CONTAINER_BIN_PATH"] = str(container_built)
+			b_env["RBE_SERVICE_BIN_PATH"] = str(service_built)
+			subprocess.run(b_cmd, cwd=str(b_cwd), env=b_env, check=True)
+			shutil.copy2(backend_built, out_dir / f"backend{ext}")
+
+			# Stage runtime settings and content folders
+			settings = ENGINE_DIR / "settings.json"
+			if settings.is_file():
+				shutil.copy2(settings, out_dir / "settings.json")
+			if cfg.dev_content:
+				for folder in ("api", "module"):
+					if (REPO_ROOT / folder).is_dir():
+						copy_clean_tree(REPO_ROOT / folder, out_dir / folder)
+			else:
+				(out_dir / "api").mkdir(parents=True, exist_ok=True)
+				(out_dir / "module").mkdir(parents=True, exist_ok=True)
+			print(f"    -> staged full release in {out_dir}")
+
+	print(f"\nFull release complete. Output root: {DIST_ROOT}")
+	return 0
+
+
 def execute_build(cfg: BuildConfig) -> int:
 	"""Executes the resolved build plan (or prints all planned commands on `--dry-run`)."""
 	if cfg.check_tools:
@@ -424,24 +609,7 @@ def execute_build(cfg: BuildConfig) -> int:
 			env.pop(key, None)
 
 	if cfg.mode == "full":
-		script = REPO_ROOT / ("build-release.ps1" if detect_host_os() == "windows" else "build-release.sh")
-		cmd = ["pwsh", "-File", str(script)] if detect_host_os() == "windows" else ["bash", str(script)]
-		if cfg.debug:
-			cmd.append("--debug")
-		if cfg.musl:
-			cmd.append("--musl")
-		if cfg.deny_admin_setup:
-			cmd.append("--deny-admin-setup")
-		if cfg.no_embed:
-			cmd.append("--no-embed")
-		if cfg.dev_content:
-			cmd.append("--dev-content")
-		if cfg.build_all:
-			cmd.append("--build-all")
-		print(f"Running full release pipeline: {' '.join(cmd)}")
-		if cfg.dry_run:
-			return 0
-		return subprocess.run(cmd, cwd=str(REPO_ROOT), env=env).returncode
+		return run_full_release(cfg, targets, cargo_target_dir, env)
 
 	selected = list(SDK_COMPONENTS) if cfg.mode == "sdk" and not cfg.components else list(cfg.components)
 	if cfg.mode == "sdk":
@@ -505,36 +673,85 @@ def execute_build(cfg: BuildConfig) -> int:
 # Cross-Platform Single-Keypress Input (Arrows + WASD + E + Q + Esc)
 # ---------------------------------------------------------------------------
 
-def read_key() -> str:
-	"""Reads one logical keypress on Windows (`msvcrt`) or Unix/macOS (`termios`)."""
-	if os.name == "nt":
-		import msvcrt
+TUI_FPS = 30
+TUI_TICK_SECONDS = 1.0 / TUI_FPS
 
-		ch = msvcrt.getwch()
-		if ch in ("\x00", "\xe0"):
-			code = msvcrt.getwch()
-			return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}.get(code, "")
-		return _normalize_key_char(ch)
 
-	import termios
-	import tty
+class KeyPoller:
+	"""Non-blocking single-keypress poller running at 30 Hz on Windows and Unix/macOS.
 
-	fd = sys.stdin.fileno()
-	old_settings = termios.tcgetattr(fd)
-	try:
-		tty.setraw(fd)
-		ch = sys.stdin.read(1)
-		if ch == "\x1b":
-			# Check for CSI arrow sequence `\x1b[A`..`\x1b[D`.
-			import select
+	Keeps Unix stdin in cbreak/raw mode for the lifetime of the TUI session instead
+	of toggling termios on every keypress, and uses `msvcrt.kbhit()` on Windows so
+	the 30 FPS UI loop stays snappy with zero input lag.
+	"""
 
-			if select.select([sys.stdin], [], [], 0.04)[0]:
-				seq = sys.stdin.read(2)
-				return {"[A": "UP", "[B": "DOWN", "[D": "LEFT", "[C": "RIGHT"}.get(seq, "ESC")
-			return "ESC"
-		return _normalize_key_char(ch)
-	finally:
-		termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+	def __init__(self) -> None:
+		self._fd: Optional[int] = None
+		self._old_termios = None
+
+	def __enter__(self) -> "KeyPoller":
+		if os.name != "nt" and sys.stdin.isatty():
+			import termios
+			import tty
+
+			self._fd = sys.stdin.fileno()
+			self._old_termios = termios.tcgetattr(self._fd)
+			tty.setraw(self._fd)
+		return self
+
+	def __exit__(self, *_exc) -> None:
+		if os.name != "nt" and self._fd is not None and self._old_termios is not None:
+			import termios
+
+			termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_termios)
+			self._fd = None
+			self._old_termios = None
+
+	def poll_all(self, timeout: float = TUI_TICK_SECONDS) -> List[str]:
+		"""Waits up to `timeout` seconds for input, then drains all buffered keys."""
+		keys: List[str] = []
+		if os.name == "nt":
+			import msvcrt
+
+			deadline = time.monotonic() + timeout
+			while not msvcrt.kbhit():
+				remaining = deadline - time.monotonic()
+				if remaining <= 0:
+					return keys
+				time.sleep(min(0.004, remaining))
+			while msvcrt.kbhit():
+				ch = msvcrt.getwch()
+				if ch in ("\x00", "\xe0"):
+					code = msvcrt.getwch()
+					k = {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}.get(code, "")
+				else:
+					k = _normalize_key_char(ch)
+				if k:
+					keys.append(k)
+			return keys
+
+		import select
+
+		if self._fd is None:
+			return keys
+		ready, _, _ = select.select([self._fd], [], [], timeout)
+		if not ready:
+			return keys
+		while select.select([self._fd], [], [], 0.0)[0]:
+			ch = os.read(self._fd, 1).decode("utf-8", errors="ignore")
+			if not ch:
+				break
+			if ch == "\x1b":
+				if select.select([self._fd], [], [], 0.015)[0]:
+					seq = os.read(self._fd, 2).decode("utf-8", errors="ignore")
+					k = {"[A": "UP", "[B": "DOWN", "[D": "LEFT", "[C": "RIGHT"}.get(seq, "ESC")
+				else:
+					k = "ESC"
+			else:
+				k = _normalize_key_char(ch)
+			if k:
+				keys.append(k)
+		return keys
 
 
 def _normalize_key_char(ch: str) -> str:
@@ -587,6 +804,13 @@ class TuiState:
 		self.cursor = 0
 		self.status_msg = "Arrows/WASD: move  |  E: interact/toggle  |  Q: sub-action"
 		self.pending_prompt: Optional[str] = None  # "custom_target" | "features"
+		# Probe cache path and installed tools ONCE at startup so 30 FPS rendering never spawns subprocesses.
+		self.cargo_target_dir = resolve_shared_cargo_target()
+		self.detected_tools = [
+			name for name in ("rustc", "cargo", "rustup", "cross", "cargo-zigbuild") if shutil.which(name)
+		]
+		self.has_cross = "cross" in self.detected_tools
+		self.has_zigbuild = "cargo-zigbuild" in self.detected_tools
 
 	def rows(self) -> List[MenuRow]:
 		"""Builds the ordered list of interactive rows for the active mode."""
@@ -885,7 +1109,7 @@ def render_rich_dashboard(state: TuiState):
 
 	for triple in targets[:10]:
 		t_os = target_os_from_triple(triple)
-		driver = " ".join(resolve_build_tool(triple, cfg.cross_backend, host_os=state.host_os))
+		driver = " ".join(resolve_build_tool(triple, cfg.cross_backend, host_os=state.host_os, has_cross=state.has_cross, has_zigbuild=state.has_zigbuild))
 		target_table.add_row(triple, t_os, driver)
 	if len(targets) > 10:
 		target_table.add_row(f"... +{len(targets) - 10} more", "", "")
@@ -904,16 +1128,22 @@ def render_rich_dashboard(state: TuiState):
 	# Right bottom pane: Live Command Preview & Cache Info
 	preview_lines = Text()
 	preview_lines.append("Cache: ", style="bold cyan")
-	preview_lines.append(f"{resolve_shared_cargo_target()}\n", style="dim")
+	preview_lines.append(f"{state.cargo_target_dir}\n", style="dim")
 	preview_lines.append("Tools: ", style="bold cyan")
-	detected = [name for name in ("rustc", "cargo", "rustup", "cross", "cargo-zigbuild") if shutil.which(name)]
-	preview_lines.append(f"{', '.join(detected) or 'none detected'}\n\n", style="green")
+	preview_lines.append(f"{', '.join(state.detected_tools) or 'none detected'}\n\n", style="green")
 
 	if targets:
 		sample_target = targets[0]
 		selected_comps = list(SDK_COMPONENTS) if cfg.mode == "sdk" and not cfg.components else cfg.components
 		for comp in selected_comps[:4]:
-			_, cmd = build_cargo_command(comp, sample_target, cfg, host_os=state.host_os)
+			_, cmd = build_cargo_command(
+				comp,
+				sample_target,
+				cfg,
+				host_os=state.host_os,
+				has_cross=state.has_cross,
+				has_zigbuild=state.has_zigbuild,
+			)
 			preview_lines.append(f"$ {' '.join(cmd)}\n", style="white")
 		if len(selected_comps) > 4:
 			preview_lines.append(f"... +{len(selected_comps) - 4} more component command(s)\n", style="dim")
@@ -992,38 +1222,58 @@ def launch_tui(initial: BuildConfig) -> Optional[BuildConfig]:
 	console = Console()
 	state = TuiState(initial)
 
-	with Live(render_rich_dashboard(state), console=console, screen=True, auto_refresh=False) as live:
-		while True:
-			live.update(render_rich_dashboard(state), refresh=True)
-			key = read_key()
-			if not key:
-				continue
-			outcome = state.handle_key(key)
-			if outcome == "quit":
-				return None
-			if outcome == "build":
-				return state.cfg
-			if outcome == "tools":
-				live.stop()
-				run_check_tools()
-				input("\nPress Enter to return to RBE Build Studio...")
-				live.start()
-			elif outcome == "prompt":
-				live.stop()
-				if state.pending_prompt == "custom_target":
-					raw = input("\nAdd custom Rust target triple(s) (comma-separated, e.g. x86_64-pc-windows-gnu): ").strip()
-					if raw:
-						for part in raw.split(","):
-							triple = part.strip()
-							if triple and triple not in state.cfg.custom_targets:
-								state.cfg.custom_targets.append(triple)
-						state.status_msg = f"Custom targets: {', '.join(state.cfg.custom_targets)}"
-				elif state.pending_prompt == "features":
-					raw = input("\nCargo features (comma-separated, blank to clear): ").strip()
-					state.cfg.features = raw
-					state.status_msg = f"Features -> {raw or '(default)'}"
-				state.pending_prompt = None
-				live.start()
+	with Live(
+		render_rich_dashboard(state),
+		console=console,
+		screen=True,
+		refresh_per_second=TUI_FPS,
+		auto_refresh=False,
+	) as live:
+		with KeyPoller() as poller:
+			dirty = True
+			while True:
+				if dirty:
+					live.update(render_rich_dashboard(state), refresh=True)
+					dirty = False
+
+				keys = poller.poll_all(timeout=TUI_TICK_SECONDS)
+				if not keys:
+					continue
+
+				for key in keys:
+					outcome = state.handle_key(key)
+					dirty = True
+					if outcome == "quit":
+						return None
+					if outcome == "build":
+						return state.cfg
+					if outcome == "tools":
+						poller.__exit__(None, None, None)
+						live.stop()
+						run_check_tools()
+						input("\nPress Enter to return to RBE Build Studio...")
+						live.start()
+						poller.__enter__()
+						break
+					if outcome == "prompt":
+						poller.__exit__(None, None, None)
+						live.stop()
+						if state.pending_prompt == "custom_target":
+							raw = input("\nAdd custom Rust target triple(s) (comma-separated, e.g. x86_64-pc-windows-gnu): ").strip()
+							if raw:
+								for part in raw.split(","):
+									triple = part.strip()
+									if triple and triple not in state.cfg.custom_targets:
+										state.cfg.custom_targets.append(triple)
+								state.status_msg = f"Custom targets: {', '.join(state.cfg.custom_targets)}"
+						elif state.pending_prompt == "features":
+							raw = input("\nCargo features (comma-separated, blank to clear): ").strip()
+							state.cfg.features = raw
+							state.status_msg = f"Features -> {raw or '(default)'}"
+						state.pending_prompt = None
+						live.start()
+						poller.__enter__()
+						break
 
 
 def _run_minimal_prompt_fallback(initial: BuildConfig) -> Optional[BuildConfig]:
