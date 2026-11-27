@@ -99,4 +99,4 @@ A capability must be both:
 1. meaningful for the source role; and
 2. explicitly granted/recognized by the compiler/runtime.
 
-Shared syntax never becomes ambient host authority. If this matrix disagrees with a legacy page under `docs/`, this `doc/` tree is the current reference.
+Shared syntax never becomes ambient host authority. This `doc/` tree is the sole canonical reference.

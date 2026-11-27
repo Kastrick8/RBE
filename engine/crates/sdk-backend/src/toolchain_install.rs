@@ -62,6 +62,53 @@ pub fn project_toolchain_exists(project: &Path) -> bool {
     project.join(".rbe").join(PROJECT_TOOLCHAIN_FILE).is_file()
 }
 
+/// Platform-specific filename for the bundled REL Language Server executable.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub const REL_LSP_BINARY_NAME: &str = "rel-lsp.exe";
+/// Platform-specific filename for the bundled REL Language Server executable.
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub const REL_LSP_BINARY_NAME: &str = "rel-lsp";
+
+/// Installs and registers the project-local `rel-lsp` binary into `<project>/.rbe/bin/`
+/// so `rpx lsp` and activated shells automatically resolve the SDK-matched LSP version.
+#[allow(dead_code)]
+pub fn install_rel_lsp_binary(project: &Path, source: &Path) -> Result<PathBuf> {
+	let source = absolute(source)?;
+	if !source.is_file() {
+		bail!(
+			"rel-lsp binary source does not exist or is not a file: {}",
+			source.display()
+		);
+	}
+	let bin_dir = project.join(".rbe").join("bin");
+	fs::create_dir_all(&bin_dir)
+		.with_context(|| format!("create SDK bin directory: {}", bin_dir.display()))?;
+	let destination = bin_dir.join(REL_LSP_BINARY_NAME);
+	if source.canonicalize().ok() != destination.canonicalize().ok() {
+		fs::copy(&source, &destination).with_context(|| {
+			format!(
+				"install rel-lsp binary from {} to {}",
+				source.display(),
+				destination.display()
+			)
+		})?;
+	}
+	Ok(destination)
+}
+
+/// Resolves the project-local `rel-lsp` binary inside `<project>/.rbe/bin/`, if installed.
+#[allow(dead_code)]
+pub fn resolve_rel_lsp_binary(project: &Path) -> Option<PathBuf> {
+	let candidate = project.join(".rbe").join("bin").join(REL_LSP_BINARY_NAME);
+	if candidate.is_file() {
+		Some(candidate)
+	} else {
+		None
+	}
+}
+
 fn publish_verified_toolchain(project: &Path, input: &str) -> Result<usize> {
     let toolchain = parse_and_verify(input)?;
     let rbe = project.join(".rbe");
@@ -312,4 +359,15 @@ mod tests {
         assert_eq!(parsed.tools["rustc"].sha256, sha256_file(&rustc).unwrap());
         fs::remove_dir_all(project).unwrap();
     }
+
+	#[test]
+	fn rel_lsp_binary_installs_into_project_bin() {
+		let project = temp_project("rel-lsp");
+		let src = project.join("rel-lsp-built.bin");
+		fs::write(&src, b"rel-lsp binary payload").unwrap();
+		let installed = install_rel_lsp_binary(&project, &src).unwrap();
+		assert_eq!(resolve_rel_lsp_binary(&project), Some(installed.clone()));
+		assert_eq!(fs::read(&installed).unwrap(), b"rel-lsp binary payload");
+		fs::remove_dir_all(project).unwrap();
+	}
 }

@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use rpx::publisher_commands;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 
 mod legacy_cli {
     include!("legacy_main.rs");
@@ -56,6 +56,16 @@ fn run() -> Result<Option<ExitCode>> {
         return Ok(None);
     };
     let command = args[command_index].as_str();
+    if command == "lsp" {
+        let forwarded = &args[command_index + 1..];
+        let code = run_lsp(forwarded)?;
+        return Ok(Some(code));
+    }
+    if command == "dev" {
+        let forwarded = &args[command_index + 1..];
+        let code = run_dev(forwarded)?;
+        return Ok(Some(code));
+    }
     if !matches!(
         command,
         "login" | "whoami" | "logout" | "publish" | "status" | "yank"
@@ -123,6 +133,73 @@ fn run() -> Result<Option<ExitCode>> {
         _ => unreachable!(),
     }
     Ok(Some(ExitCode::SUCCESS))
+}
+
+/// Launches the active project SDK toolchain's `rel-lsp` binary over stdio.
+/// Editor extensions invoke `rpx lsp` so they always match the project's SDK version.
+fn run_lsp(extra_args: &[String]) -> Result<ExitCode> {
+	let binary = resolve_toolchain_binary("rel-lsp", "RBE_REL_LSP_BIN")?;
+	let mut cmd = Command::new(&binary);
+	if !extra_args.iter().any(|arg| arg == "--stdio" || arg == "--version" || arg == "-V" || arg == "--help" || arg == "-h") {
+		cmd.arg("--stdio");
+	}
+	cmd.args(extra_args)
+		.stdin(Stdio::inherit())
+		.stdout(Stdio::inherit())
+		.stderr(Stdio::inherit());
+	let status = cmd
+		.status()
+		.with_context(|| format!("failed to launch rel-lsp at {}", binary.display()))?;
+	Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+}
+
+/// Launches the active project backend in dev hot-reload mode (`backend dev`).
+fn run_dev(extra_args: &[String]) -> Result<ExitCode> {
+	let binary = resolve_toolchain_binary("backend", "RBE_BACKEND_BIN")?;
+	let status = Command::new(&binary)
+		.arg("dev")
+		.args(extra_args)
+		.stdin(Stdio::inherit())
+		.stdout(Stdio::inherit())
+		.stderr(Stdio::inherit())
+		.status()
+		.with_context(|| format!("failed to launch backend dev mode at {}", binary.display()))?;
+	Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+}
+
+/// Resolves a project SDK binary by checking:
+/// 1. An explicit environment override (`env_var`),
+/// 2. The nearest ancestor `<project>/.rbe/bin/<name>` activated toolchain directory,
+/// 3. A sibling executable next to the running `rpx` binary,
+/// 4. Falling back to `<name>` on PATH.
+fn resolve_toolchain_binary(name: &str, env_var: &str) -> Result<PathBuf> {
+	if let Ok(explicit) = std::env::var(env_var) {
+		if !explicit.trim().is_empty() {
+			return Ok(PathBuf::from(explicit));
+		}
+	}
+	let bin_name = if cfg!(windows) {
+		format!("{name}.exe")
+	} else {
+		name.to_string()
+	};
+	if let Ok(cwd) = std::env::current_dir() {
+		for ancestor in cwd.ancestors() {
+			let candidate = ancestor.join(".rbe").join("bin").join(&bin_name);
+			if candidate.is_file() {
+				return Ok(candidate);
+			}
+		}
+	}
+	if let Ok(exe) = std::env::current_exe() {
+		if let Some(dir) = exe.parent() {
+			let sibling = dir.join(&bin_name);
+			if sibling.is_file() {
+				return Ok(sibling);
+			}
+		}
+	}
+	Ok(PathBuf::from(bin_name))
 }
 
 fn command_index(args: &[String]) -> Option<usize> {
@@ -212,7 +289,12 @@ fn publisher_help_requested(args: &[String]) -> bool {
 
 fn print_publisher_help() {
     println!(
-        "\nPublisher commands:\n\
+        "\nSDK toolchain commands:\n\
+  rpx lsp [args...]\n\
+      Launch the active project SDK toolchain\'s rel-lsp server over stdio.\n\
+  rpx dev [args...]\n\
+      Start RBE in sub-second hot-reload dev mode watching REL sources.\n\n\
+Publisher commands:\n\
   rpx login [--registry <url>]\n\
       Authorize RPX in the browser and store a scoped registry credential.\n\
   rpx whoami [--registry <url>]\n\

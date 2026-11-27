@@ -217,3 +217,8 @@ That means QuickDB does **not** replace:
 - durable caches that must survive Service restart.
 
 Use it to avoid obviously unnecessary database work, not to invent facts. :D
+
+## Additional Bound-Class Rules
+
+- **Bound filter lifetime:** Bound filters cannot be dropped through their class facade; their lifetime belongs to the class declaration and owning Service process.
+- **Multiple bound classes:** Any number of service-local classes may exist in one `.service` file alongside `class Service`; any class declaring `const <= set => ...;` requires `:import[quickDB]`.

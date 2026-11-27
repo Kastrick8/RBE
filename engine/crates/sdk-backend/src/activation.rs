@@ -69,6 +69,12 @@ function global:rpx {{
     & (Join-Path $global:RbeProjectBin 'rpx.exe') @CommandArgs
 }}
 
+function global:rel-lsp {{
+    param([Parameter(ValueFromRemainingArguments=$true)][object[]]$CommandArgs)
+    Assert-RbeProjectScope
+    & (Join-Path $global:RbeProjectBin 'rel-lsp.exe') @CommandArgs
+}}
+
 function global:Deactivate-RbeProject {{
     if ($env:RBE_PROJECT_BIN) {{
         $env:PATH = (($env:PATH -split ';') | Where-Object {{
@@ -77,6 +83,7 @@ function global:Deactivate-RbeProject {{
     }}
     Remove-Item Function:\backend -ErrorAction SilentlyContinue
     Remove-Item Function:\rpx -ErrorAction SilentlyContinue
+    Remove-Item Function:\rel-lsp -ErrorAction SilentlyContinue
     Remove-Item Function:\Assert-RbeProjectScope -ErrorAction SilentlyContinue
     Remove-Item Function:\Deactivate-RbeProject -ErrorAction SilentlyContinue
     Remove-Variable RbeProjectRoot -Scope Global -ErrorAction SilentlyContinue
@@ -86,7 +93,7 @@ function global:Deactivate-RbeProject {{
 
 Write-Host "RBE project commands activated for $global:RbeProjectRoot"
 Write-Host "  process PATH: $global:RbeProjectBin"
-Write-Host "  backend / rpx are available only inside this project tree"
+Write-Host "  backend / rpx / rel-lsp are available only inside this project tree"
 Write-Host "  run Deactivate-RbeProject to remove them from this shell"
 "#
     ))
@@ -145,16 +152,21 @@ rpx() {{
     "$RBE_PROJECT_BIN/rpx" "$@"
 }}
 
+rel-lsp() {{
+    _rbe_require_project_scope || return $?
+    "$RBE_PROJECT_BIN/rel-lsp" "$@"
+}}
+
 rbe_deactivate() {{
     _rbe_remove_path_entry "$RBE_PROJECT_BIN"
     export PATH
-    unset -f backend rpx _rbe_require_project_scope _rbe_remove_path_entry rbe_deactivate 2>/dev/null || true
+    unset -f backend rpx rel-lsp _rbe_require_project_scope _rbe_remove_path_entry rbe_deactivate 2>/dev/null || true
     unset RBE_PROJECT_ROOT RBE_PROJECT_BIN
 }}
 
 echo "RBE project commands activated for $RBE_PROJECT_ROOT"
 echo "  process PATH: $RBE_PROJECT_BIN"
-echo "  backend / rpx are available only inside this project tree"
+echo "  backend / rpx / rel-lsp are available only inside this project tree"
 echo "  run rbe_deactivate to remove them from this shell"
 "#
     ))

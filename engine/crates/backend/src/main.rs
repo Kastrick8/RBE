@@ -23,6 +23,8 @@ mod error_code_book;
 mod error_reporter_daemon;
 mod host_bootstrap;
 mod host_capability;
+#[allow(dead_code)]
+mod hot_reload;
 mod maintenance_notice;
 mod oid_vault;
 #[path = "package_links/approval.rs"]

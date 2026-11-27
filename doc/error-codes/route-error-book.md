@@ -1,3 +1,5 @@
+> **Note:** This book documents the route compiler/analyzer `E1xxx`–`E4xxx` and `W0xxx` diagnostic codes (several of which, such as `E2001` and `E3000`, are actively emitted by `route-engine/src/analyzer.rs`). For the unified `REL1xxx`–`REL9xxx` namespace and machine-readable catalog, see [`rel.md`](rel.md) and [`catalog.json`](catalog.json).
+
 # RBE Route Compiler Error Book
 
 This is the human-readable troubleshooting guide for `.route` compiler diagnostics.

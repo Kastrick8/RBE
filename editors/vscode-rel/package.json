@@ -1,0 +1,71 @@
+{
+	"name": "vscode-rel",
+	"displayName": "RBE REL Language Support",
+	"description": "Language support, live diagnostics, SDK-aware autocomplete, and go-to-definition for RBE REL (.route, .module, .service, .field, server.server) powered by `rpx lsp`.",
+	"version": "0.1.0",
+	"publisher": "kastrick8",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"activationEvents": [
+		"onLanguage:rel",
+		"workspaceContains:server.server",
+		"workspaceContains:**/*.route"
+	],
+	"main": "./src/extension.js",
+	"contributes": {
+		"languages": [
+			{
+				"id": "rel",
+				"aliases": [
+					"REL",
+					"Runtime Engine Language"
+				],
+				"extensions": [
+					".route",
+					".module",
+					".service",
+					".field",
+					".server"
+				],
+				"filenames": [
+					"server.server"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "rel",
+				"scopeName": "source.rel",
+				"path": "./syntaxes/rel.tmLanguage.json"
+			}
+		],
+		"configuration": {
+			"title": "RBE REL",
+			"properties": {
+				"rel.lsp.command": {
+					"type": "string",
+					"default": "rpx",
+					"description": "Executable used to launch the REL Language Server (defaults to `rpx`, which resolves the active project SDK's `rel-lsp`)."
+				},
+				"rel.lsp.args": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [
+						"lsp"
+					],
+					"description": "Arguments passed to `rel.lsp.command`."
+				}
+			}
+		}
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1"
+	}
+}

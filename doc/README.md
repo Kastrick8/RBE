@@ -10,8 +10,10 @@ This directory is the authoritative user-facing documentation for the current RB
 - [`rel.md`](rel.md) — REL (Runtime Engine Language), shared grammar, capabilities, ENV, embedded sources, and recursion rules.
 - [`rel-builtins.md`](rel-builtins.md) — bounded password work, structured logging, complete HTTP deadlines, and Service memory/filter allocation limits.
 - [`relc.md`](relc.md) — the implemented RELC compilation/link pipeline and Runtime Image format.
+- [`rel-lsp.md`](rel-lsp.md) — REL Language Server (`rel-lsp --stdio`), `rpx lsp` SDK entrypoint, diagnostics, completion, and editor setup.
+- [`hot-reload.md`](hot-reload.md) — Sub-second dev-mode hot reload (`ArcSwap` + `notify` 75 ms debounce + incremental `SymbolDependencyGraph`).
 - [`binary-updates.md`](binary-updates.md) — first-run admin setup, binary-only version tags, verified downloads and opt-in standalone updates.
-- [`linux-builds.md`](linux-builds.md) — Linux build prerequisites, `--check-tools`, corrupt rustup cache detection/recovery, deployment-host guidance, and the build-tool CI contract.
+- [`linux-builds.md`](linux-builds.md) — Linux build prerequisites, `--check-tools`, corrupt rustup cache detection/recovery, deployment-host guidance, and the build-tool CI contract (also supported cross-platform via `python3 build.py` TUI/CLI).
 - [`library-system.md`](library-system.md) — external libraries and the current project package/install architecture, including `package.rbe.yaml`, lockfile activation, managed `rbe.sys.*` tools, package attestation, durable install sessions, and controlled dependency hydration.
 - [`library-host.md`](library-host.md) — Library Host purpose, trust boundary, and the internal `container --library-worker-proxy` execution mode.
 - [`oid-compiler-cache.md`](oid-compiler-cache.md) — OID address space, one-index layout, RPX bindings, native Service assembly, diagnostics, and Vault-attested cache security.
@@ -26,6 +28,10 @@ This directory is the authoritative user-facing documentation for the current RB
 - [`storage.md`](storage.md) — Environment Storage, unified `storage.write(...)`, frozen `$$/` ProjectRoot semantics, encoding, and Data-Level status.
 - [`field-manager.md`](field-manager.md) — first-class `.field` sources, typed query-field IR, deterministic helpers, and current runtime boundary.
 - [`video-manager.md`](video-manager.md) — Video Manager media pipeline, hardware normalization, and live-session control.
+- [`container-integrity.md`](container-integrity.md) — container dependency integrity, release layout, signing keys, and crash supervision.
+- [`module-language.md`](module-language.md) — full `.module` language specification, exports, caching, and error isolation.
+- [`route-language.md`](route-language.md) — full `.route` language specification, built-in tables, and compiler pipeline.
+- [`service-runtime.md`](service-runtime.md) — `.service` runtime supervision, lifecycle classes, CONTROL ER recovery, and Vault child recovery.
 
 ## Proposed language evolution
 
@@ -106,7 +112,7 @@ The base package/install contracts remain documented in [`library-system.md`](li
 3. **Physical and embedded sources retain their role.** An embedded module is Module REL; an embedded route is Route REL.
 4. **Implemented, partial, and planned behavior are separate.** A parsed name, source-only plan, or lowered contract is not automatically a fully wired runtime/CLI feature.
 5. **Runtime behavior wins over old design text.** If implementation and an old document disagree, update this tree to match implementation.
-6. **The old `docs/` tree is legacy while migration continues.** New REL/RELC/runtime/package work should update this `doc/` tree first; legacy pages do not override this reference.
+6. **`doc/` is the sole canonical documentation directory.** Never create or write to a legacy `docs/` directory; all documentation lives under `doc/`.
 7. **Security boundaries must describe authority, not vibes.** Document who owns a capability, how it is authenticated, and what happens on failure/restart.
 8. **Stable error codes are part of the public diagnostic contract.** Add/update the Error Code Book in the same change that introduces a new code; released codes are never recycled for a different meaning.
 9. **Caches are never authority by location alone.** Package, runtime, and dependency caches remain reconstructible/untrusted state until the relevant pinned identity and policy checks succeed.

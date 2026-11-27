@@ -1,0 +1,47 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "REL",
+	"scopeName": "source.rel",
+	"patterns": [
+		{ "include": "#comments" },
+		{ "include": "#strings" },
+		{ "include": "#directives" },
+		{ "include": "#methods" },
+		{ "include": "#keywords" },
+		{ "include": "#builtins" }
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{ "name": "comment.line.double-slash.rel", "match": "//.*$" },
+				{ "name": "comment.block.rel", "begin": "/\\*", "end": "\\*/" }
+			]
+		},
+		"strings": {
+			"patterns": [
+				{ "name": "string.quoted.double.rel", "begin": "\"", "end": "\"" },
+				{ "name": "string.quoted.single.rel", "begin": "'", "end": "'" }
+			]
+		},
+		"directives": {
+			"patterns": [
+				{ "name": "keyword.control.directive.rel", "match": ":[a-zA-Z_][a-zA-Z0-9_]*" }
+			]
+		},
+		"methods": {
+			"patterns": [
+				{ "name": "entity.name.function.http.rel", "match": "\\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\b" }
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{ "name": "keyword.control.rel", "match": "\\b(fn|export|class|const|let|return|if|else|for|while|from|as|true|false|null)\\b" }
+			]
+		},
+		"builtins": {
+			"patterns": [
+				{ "name": "support.class.builtin.rel", "match": "\\b(workspace|script|archive|quickDB|net|json|time|log|private|storage)\\b" }
+			]
+		}
+	}
+}

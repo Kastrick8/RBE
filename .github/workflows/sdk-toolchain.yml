@@ -8,6 +8,7 @@ on:
       - 'engine/crates/sdk-package/**'
       - 'engine/crates/rpx/**'
       - 'engine/crates/sdk-backend/**'
+      - 'engine/crates/rel-lsp/**'
       - 'sdk/**'
       - 'build.ps1'
       - 'build.sh'
@@ -19,6 +20,7 @@ on:
       - 'engine/crates/sdk-package/**'
       - 'engine/crates/rpx/**'
       - 'engine/crates/sdk-backend/**'
+      - 'engine/crates/rel-lsp/**'
       - 'sdk/**'
       - 'build.ps1'
       - 'build.sh'
@@ -49,16 +51,19 @@ jobs:
           cargo fmt --manifest-path engine/crates/sdk-package/Cargo.toml -- --check
           cargo fmt --manifest-path engine/crates/rpx/Cargo.toml -- --check
           cargo fmt --manifest-path engine/crates/sdk-backend/Cargo.toml -- --check
+          cargo fmt --manifest-path engine/Cargo.toml -p rel-lsp -- --check
       - name: Check SDK crates
         run: |
           cargo check --manifest-path engine/crates/sdk-package/Cargo.toml
           cargo check --manifest-path engine/crates/rpx/Cargo.toml
           cargo check --manifest-path engine/crates/sdk-backend/Cargo.toml
+          cargo check --manifest-path engine/Cargo.toml -p rel-lsp
       - name: Clippy SDK crates
         run: |
           cargo clippy --manifest-path engine/crates/sdk-package/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path engine/crates/rpx/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path engine/crates/sdk-backend/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --manifest-path engine/Cargo.toml -p rel-lsp --all-targets -- -D warnings
 
   build:
     needs: check

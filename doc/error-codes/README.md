@@ -96,3 +96,5 @@ service.exe --explain SVC5002
 Unknown codes suggest numerically nearby registered codes from the same subsystem. Alphabetic filters select one exact subsystem (`REL` does not include `RELC`); filters containing digits can narrow a range such as `SVC5`. The lookup is compiled from this authoritative documentation tree, so it does not require network access or a mutable runtime docs directory.
 
 For machine-readable tooling, see [`catalog.json`](catalog.json).
+
+- [`route-error-book.md`](route-error-book.md) — Route compiler and analyzer `E1xxx`–`E4xxx` / `W0xxx` diagnostics.

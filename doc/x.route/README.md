@@ -160,3 +160,7 @@ class Route {
 ```
 
 See [`../x.module/`](../x.module/).
+
+## Full Route Language Specification
+
+For the detailed `.route` grammar, built-in member tables (`net`, `json`, `time`, `log`, `private`), compiler pipeline, and boot UI notes, see [`../route-language.md`](../route-language.md).

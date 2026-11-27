@@ -124,3 +124,7 @@ Reusable application logic can live in Module REL, but a general user-defined Mo
 ## Capability rule
 
 The exact built-in operation set evolves, but the rule does not: a host capability must be explicitly importable by Module REL and enforced by the compiler/runtime. Common REL grammar never grants ambient host authority.
+
+## Full Language Specification
+
+For the complete `.module` language grammar, binding rules, caching semantics, and error isolation details, see [`../module-language.md`](../module-language.md).

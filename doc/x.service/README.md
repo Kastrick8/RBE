@@ -197,3 +197,7 @@ The current Service runtime does not promise:
 - distributed Service placement;
 - a general external event bus automatically feeding `Service.event()`;
 - a completed Service-backed custom middleware lifecycle.
+
+## Detailed Runtime & Supervision Reference
+
+For config-backed defaults, hybrid idling behavior, CONTROL ER recovery decisions, Vault child recovery, and Error Reporter postmortem details, see [`../service-runtime.md`](../service-runtime.md).

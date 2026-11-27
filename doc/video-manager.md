@@ -175,3 +175,144 @@ Video Manager should not yet be described as a complete media platform. Remainin
 - richer normalization/profile/variant policy;
 - complete backend-configured custom default adapter behavior;
 - a Service-to-Mother Video Manager capability channel if Service REL is later allowed to use VM directly.
+
+## Pipeline, Adapter, and Worker Reference
+
+## Asset, job, and variant model
+
+Implemented source types:
+
+- `upload`
+- `download`
+- `local`
+- `generated`
+- `live`
+- `recorded_live`
+
+Implemented asset states:
+
+- `reserved`
+- `quarantined`
+- `processing`
+- `ready`
+- `failed`
+- `deleted`
+
+Download jobs expose stage progress. Current aggregate milestones are approximately:
+
+- `queued`: `0.00`
+- `downloading`: `0.05`
+- `downloaded`: `0.45`
+- `container_checked`: `0.55`
+- `probed`: `0.70`
+- `normalizing`: `0.75`
+- `ready`: `1.00`
+
+These are pipeline-stage progress values, not byte-perfect FFmpeg progress percentages.
+
+The normalized download path currently produces a `standard` MP4 variant using H.264 video and AAC audio. The FFmpeg profile is owned by trusted Rust and is not supplied as arbitrary language/process arguments.
+
+## Default database
+
+`VideoManager::open_default` registers the built-in SQLite adapter as `default` and creates both quarantine and normalized-media roots adjacent to the database data directory.
+
+SQLite uses WAL journaling and foreign-key enforcement. The schema contains:
+
+- `video_namespaces`
+- `video_groups`
+- `video_assets`
+- `video_variants`
+- `video_jobs`
+- `video_live_sessions`
+
+The adapter supports asset creation/lookup, job lookup, queued-job discovery, aggregate queue depth, startup recovery, atomic job claiming/transitions, variant listing, and atomic ready-variant commit.
+
+Final normalized promotion is transactional at the metadata layer: the ready variant is inserted, the asset changes from `quarantined` to `ready`, and the job changes from `normalizing` to `ready` in one SQLite transaction. If that commit fails, the newly promoted media file is removed instead of leaving a falsely-ready asset.
+
+## Database adapters
+
+`VideoDatabase` is the in-process storage adapter contract. Additional adapters can be registered under explicit names.
+
+Database selection is fail-closed. Requesting an unknown adapter returns an error; Video Manager does not silently fall back to `default`.
+
+Worker-oriented adapter hooks have safe no-work defaults, so a custom adapter must explicitly implement queued-job discovery/recovery if it wants the mother-owned download worker to consume its jobs.
+
+The full backend-configured custom-default-adapter path is not complete yet.
+
+### Worker configuration
+
+The relevant `videoManager` settings are:
+
+```json
+{
+  "downloadWorkerEnabled": false,
+  "ffprobeExecutable": "",
+  "ffmpegExecutable": "",
+  "workerRecoveryScanSecs": 30,
+  "downloadMaxBytes": 8589934592
+}
+```
+
+The worker is disabled by default. When enabled, FFprobe and FFmpeg must be explicitly configured. Relative executable paths are resolved against the backend binary/runtime root; Video Manager does not search the shell `PATH` and does not accept executable paths from module/route input.
+
+At backend shutdown the worker first receives a graceful stop signal. An in-flight pipeline item may finish within `runtime.gracefulShutdownTimeoutMs`. If it exceeds that budget the task is aborted; the next startup's recovery pass re-queues the interrupted job. Retried downloads identity-check and truncate their reserved quarantine file before writing, so stale partial bytes do not contaminate the retry.
+
+## Container inspection
+
+After download, `inspect_download_container` claims `downloaded -> inspecting` and runs a cheap signature gate before expensive probing.
+
+The gate recognizes supported video-container families such as ISO-BMFF/MP4 and MPEG transport streams while rejecting obvious image/audio/FLV/random payloads. Failure deletes the quarantined bytes and records the job failure.
+
+This signature gate is intentionally not treated as authoritative media decoding. FFprobe is the next required stage.
+
+## FFprobe
+
+`probe_download_media` claims `container_checked -> probing` and launches only the configured trusted FFprobe executable.
+
+The FFprobe policy requires an absolute regular-file executable path after runtime-path resolution and bounds both timeout and captured output. The invocation:
+
+- reads only the quarantined local file
+- restricts allowed protocols to local/data-oriented protocols
+- captures bounded JSON output
+- rejects malformed output
+- requires at least one valid video stream
+- validates dimensions and frame-rate ranges
+
+Success records `probed`. Failure deletes quarantine and records the job as failed.
+
+## FFmpeg normalization
+
+`normalize_download_media` claims `probed -> normalizing` and invokes the configured trusted FFmpeg executable through `FfmpegPolicy`.
+
+The current standard profile is deliberately fixed by RBE:
+
+- MP4 output
+- H.264 via `libx264`
+- AAC audio when present
+- `yuv420p`
+- CRF 23
+- medium preset
+- fast-start MP4 metadata
+- first video stream and optional first audio stream
+- subtitles/data streams excluded
+- local/data protocol whitelist only
+- stdin disabled
+- output overwrite disabled
+- bounded FFmpeg error output
+- bounded execution timeout
+
+Module/service code does **not** receive arbitrary FFmpeg switches, shell strings, process spawning, input paths, or output paths.
+
+FFmpeg writes into a private staging file under the generated asset directory. Only after FFmpeg succeeds is that staging file renamed to the final `primary.mp4`; the DB ready-variant transaction then publishes it. Quarantine is removed after that transaction succeeds.
+
+At worker boot, RBE parses the configured FFmpeg encoder table and requires the software `libx264` and AAC encoders used by the standard profile. Advertised H.264 hardware candidates are recorded from a strict RBE allowlist. Directly testable candidates (currently NVENC, Quick Sync, AMF, VideoToolbox, and Media Foundation) then receive a bounded one-frame synthetic smoke test; only encoders that actually initialize and encode successfully are reported as verified. Device-bound candidates such as VAAPI, V4L2 M2M, and RKMPP remain advertised-only until explicit device handling lands.
+
+Hardware acceleration is still not selected for real normalization yet; the current profile intentionally uses deterministic `libx264`. The verified candidate set is the safety foundation for automatic selection rather than trusting FFmpeg's advertised encoder list.
+
+## Backend integration
+
+When enabled, the backend owns one `VideoManager` in shared application state. `/health` includes database health plus download-worker state/queue depth. An unhealthy default database or a degraded download worker contributes to backend health failure.
+
+The language layer receives a narrow `VideoLanguage` facade rather than raw manager/database/filesystem objects.
+
+The worker is optional. With `downloadWorkerEnabled = false`, queueing remains available but jobs stay quarantined/queued until a trusted worker is enabled or another trusted Rust caller processes them.

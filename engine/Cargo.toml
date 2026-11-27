@@ -9,6 +9,7 @@ members = [
     "crates/supervisor",
     "crates/logging",
     "crates/route-engine",
+    "crates/rel-lsp",
     "crates/service-runtime",
     "crates/video-manager",
     "crates/cloud-node",
@@ -52,6 +53,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
+arc-swap = "1"
+notify = "6"
 
 # Release profile tuned per migration-plan §9.1: this is the cheap final
 # pass, not where the performance budget goes. Apply once there's

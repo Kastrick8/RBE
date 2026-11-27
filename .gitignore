@@ -9,3 +9,4 @@ __pycache__/
 **.lock
 **/Cargo.lock
 container-runtime/Cargo.lock
+data/admin/*.json
