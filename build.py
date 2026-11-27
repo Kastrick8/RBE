@@ -426,6 +426,7 @@ def ensure_rustup_target(target: str, dry_run: bool) -> None:
 		print(f"  + rustup target add {target}")
 		subprocess.run(["rustup", "target", "add", target], check=True)
 
+
 def configure_msvc_llvm_env(target: str, env: Dict[str, str]) -> None:
 	"""Defaults MSVC C archiving and final linking to LLVM-compatible tools."""
 	if not is_windows_msvc_target(target):
@@ -664,8 +665,9 @@ def execute_build(cfg: BuildConfig) -> int:
 	cargo_target_dir = resolve_shared_cargo_target()
 	env = os.environ.copy()
 	env["CARGO_TARGET_DIR"] = cargo_target_dir
-	for target in targets:
-		configure_msvc_llvm_env(target, env)
+	if cfg.cross_backend in ("auto", "cargo", "xwin"):
+		for target in targets:
+			configure_msvc_llvm_env(target, env)
 	if cfg.cross_backend == "xwin" or (
 		cfg.cross_backend == "auto" and any(is_windows_msvc_target(target) for target in targets)
 	):
@@ -909,7 +911,7 @@ class TuiState:
 			MenuRow("opt", "dev_content", "--dev-content (full release)", "Q: toggle dry-run"),
 			MenuRow("opt", "dry_run", "Dry-Run Preview (--dry-run)", "Q: run build now"),
 			MenuRow("action", "build", "Start Build", "E: execute build plan"),
-			MenuRow("action", "tools", "Check Toolchain & Targets", "E: inspect rustc/cross/zigbuild"),
+			MenuRow("action", "tools", "Check Toolchain & Targets", "E: inspect Rust, xwin, and LLVM tools"),
 			MenuRow("action", "quit", "Quit", "Esc: exit immediately"),
 		])
 		return items
@@ -1401,7 +1403,7 @@ def parse_args(argv: Sequence[str]) -> Tuple[BuildConfig, bool]:
 	parser.add_argument("--deny-admin-setup", action="store_true", help="Skip compile-time admin password prompt.")
 	parser.add_argument("--no-embed", action="store_true", help="Full release: do not embed container-bin.")
 	parser.add_argument("--dev-content", action="store_true", help="Full release: bundle dev api/module files.")
-	parser.add_argument("--check-tools", action="store_true", help="Verify Rust/cross/C prerequisites and exit.")
+	parser.add_argument("--check-tools", action="store_true", help="Verify Rust, xwin, LLVM, and C prerequisites and exit.")
 	parser.add_argument("--dry-run", action="store_true", help="Print resolved build commands without executing Cargo.")
 
 	ns = parser.parse_args(expanded)
