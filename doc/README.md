@@ -13,7 +13,7 @@ This directory is the authoritative user-facing documentation for the current RB
 - [`rel-lsp.md`](rel-lsp.md) — REL Language Server (`rel-lsp --stdio`), `rpx lsp` SDK entrypoint, diagnostics, completion, and editor setup.
 - [`hot-reload.md`](hot-reload.md) — Sub-second dev-mode hot reload (`ArcSwap` + `notify` 75 ms debounce + incremental `SymbolDependencyGraph`).
 - [`binary-updates.md`](binary-updates.md) — first-run admin setup, binary-only version tags, verified downloads and opt-in standalone updates.
-- [`linux-builds.md`](linux-builds.md) — Linux build prerequisites, `--check-tools`, corrupt rustup cache detection/recovery, deployment-host guidance, and the build-tool CI contract (also supported cross-platform via `python3 build.py` TUI/CLI).
+- [`linux-builds.md`](linux-builds.md) — Linux build prerequisites, Windows/MSVC cross-builds through cargo-xwin, LLVM archiver/linker defaults, `--check-tools`, corrupt rustup cache recovery, and the build-tool CI contract.
 - [`library-system.md`](library-system.md) — external libraries and the current project package/install architecture, including `package.rbe.yaml`, lockfile activation, managed `rbe.sys.*` tools, package attestation, durable install sessions, and controlled dependency hydration.
 - [`library-host.md`](library-host.md) — Library Host purpose, trust boundary, and the internal `container --library-worker-proxy` execution mode.
 - [`oid-compiler-cache.md`](oid-compiler-cache.md) — OID address space, one-index layout, RPX bindings, native Service assembly, diagnostics, and Vault-attested cache security.
