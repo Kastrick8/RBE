@@ -63,6 +63,10 @@ class BuildPyTests(unittest.TestCase):
 		self.assertIn("--target", command)
 		self.assertIn(target, command)
 
+	def test_explicit_xwin_backend_rejects_non_msvc_targets(self):
+		with self.assertRaisesRegex(ValueError, "only supports Windows MSVC"):
+			rbe_build.resolve_build_tool("x86_64-unknown-linux-gnu", "xwin", host_os="linux")
+
 	def test_windows_msvc_xwin_supports_check_and_test(self):
 		target = "aarch64-pc-windows-msvc"
 		for mode in ("check", "test"):
